@@ -84,10 +84,15 @@ import (
 const usageMessage = `
 usage: 2fa <command> [options] keyname
 	-help : print this help message and exit
-	-add : add a key
-		-7 : generate 7-digit code
-		-8 : generate 8-digit code
+	-add  : add a key
+		-7 :    generate 7-digit code
+		-8 :    generate 8-digit code
 		-hotp : add hotp 2fa
+	-edit : edit a key
+		-7 :    generate 7-digit code
+		-8 :    generate 8-digit code
+		-hotp : hotp 2fa
+	-rm   : remove a key
 	-list : print all keys
 	-clip : copy the code to clipboard
 
@@ -125,6 +130,8 @@ var (
 	flag7    = flag.Bool("7", false, "generate 7-digit code")
 	flag8    = flag.Bool("8", false, "generate 8-digit code")
 	flagClip = flag.Bool("clip", false, "copy code to the clipboard")
+	flagEdit = flag.Bool("edit", false, "edit a existing code")
+	flagRm   = flag.Bool("rm", false, "remove a key")
 
 	flagViewRecoverCode = flag.Bool("viewRecover", false, "view recover code for a key")
 
@@ -183,6 +190,19 @@ func handle(k *KeyChain) error {
 			return err
 		}
 		return nil
+	}
+	if *flagClip {
+		// copy code to clipboard
+	}
+	if *flagViewRecoverCode {
+		// view recover code
+	}
+	if *flagEdit {
+		// edit key
+		return k.edit(name)
+	}
+	if *flagRm {
+		// remove key
 	}
 
 	return nil
@@ -328,6 +348,22 @@ func (c *KeyChain) add(name string) error {
 	}
 
 	c.Keys[name] = key
+
+	return nil
+}
+
+func (c *KeyChain) edit(name string) error {
+	// remove the given name from keys
+	existingKey, ok := c.Keys[name]
+	if !ok {
+		return fmt.Errorf("key %q does not exist", name)
+	}
+	delete(c.Keys, name)
+	err := c.add(name)
+	if err != nil {
+		c.Keys[name] = existingKey
+		return err
+	}
 
 	return nil
 }

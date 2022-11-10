@@ -78,6 +78,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/atotto/clipboard"
 )
 
 // usage message
@@ -165,15 +167,15 @@ func handle(k *KeyChain) error {
 		if flag.NArg() != 0 {
 			usage()
 		}
-		k.list()
-		return nil
+		err := k.list()
+		return err
 	}
 	if flag.NArg() == 0 && !*flagAdd {
 		if *flagClip {
 			usage()
 		}
-		k.list()
-		return nil
+		err := k.list()
+		return err
 	}
 	if flag.NArg() != 1 {
 		usage()
@@ -193,6 +195,8 @@ func handle(k *KeyChain) error {
 	}
 	if *flagClip {
 		// copy code to clipboard
+		err := k.clip(name)
+		return err
 	}
 	if *flagViewRecoverCode {
 		// view recover code
@@ -264,7 +268,7 @@ func (c *KeyChain) saveKeyChainFile() error {
 }
 
 // print name of all existing keys
-func (c *KeyChain) list() {
+func (c *KeyChain) list() error {
 	longest := 0
 	var names []string
 	for name := range c.Keys {
@@ -275,8 +279,14 @@ func (c *KeyChain) list() {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		fmt.Println(name + strings.Repeat(" ", longest-len(name)+2) + c.code(name)) // +2 for the tab
+		code, err := c.code(name)
+		if err != nil {
+			return err
+		}
+		fmt.Println(name + strings.Repeat(" ", longest-len(name)+2) + code) // +2 for the tab
 	}
+
+	return nil
 }
 
 // add a key
@@ -370,10 +380,10 @@ func (c *KeyChain) edit(name string) error {
 }
 
 // return the real code for a key
-func (c *KeyChain) code(name string) string {
+func (c *KeyChain) code(name string) (string, error) {
 	k, ok := c.Keys[name]
 	if !ok {
-		log.Fatalf("no such key %q", name)
+		return "", fmt.Errorf("key %q does not exist", name)
 	}
 	var code int
 
@@ -385,7 +395,31 @@ func (c *KeyChain) code(name string) string {
 		k.Counter++
 	}
 
-	return fmt.Sprintf("%0*d", k.Digits, code)
+	return fmt.Sprintf("%0*d", k.Digits, code), nil
+}
+
+func (c *KeyChain) clip(name string) error {
+	// test if the name exist in the key chain
+	_, ok := c.Keys[name]
+	if !ok {
+		return fmt.Errorf("key %q does not exist", name)
+	}
+
+	code, err := c.code(name)
+	if err != nil {
+		return err
+	}
+
+	// copy the code to clipboard
+	err = clipboard.WriteAll(code)
+	if err != nil {
+		return err
+	}
+
+	// print the code
+	fmt.Println(name + strings.Repeat(" ", 2) + code)
+
+	return nil
 }
 
 func decodeKey(key string) ([]byte, error) {

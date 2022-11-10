@@ -83,6 +83,17 @@ import (
 	"github.com/atotto/clipboard"
 )
 
+const usageMessage = `
+usage: 2fa <command> [options] keyname
+	-help : print this help message and exit
+	-add : add a key
+		-7 : generate 7-digit code
+		-8 : generate 8-digit code
+		-hotp : add hotp 2fa
+	-list : print all keys
+	-clip : copy the code to clipboard
+`
+
 var (
 	flagAdd  = flag.Bool("add", false, "add a key")
 	flagList = flag.Bool("list", false, "list keys")
@@ -93,19 +104,7 @@ var (
 )
 
 func usage() {
-	fmt.Fprintf(os.Stderr, "usage: ")
-
-	fmt.Fprintf(os.Stderr, "2fa <command> [options] keyname\n")
-
-	fmt.Fprintf(os.Stderr, "\t-help : print this help message and exit\n")
-	fmt.Fprintf(os.Stderr, "\t-add : add a key\n")
-	fmt.Fprintf(os.Stderr, "\t\t-7 : generate 7-digit code\n")
-	fmt.Fprintf(os.Stderr, "\t\t-8 : generate 8-digit code\n")
-	fmt.Fprintf(os.Stderr, "\t\t-hotp : add hotp 2fa")
-
-	fmt.Fprintf(os.Stderr, "\t-list : print all keys\n")
-
-	fmt.Fprintf(os.Stderr, "\t-clip : copy the code to clipboard\n")
+	fmt.Fprintf(os.Stderr, usageMessage)
 	os.Exit(2)
 }
 

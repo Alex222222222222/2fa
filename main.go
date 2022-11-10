@@ -203,6 +203,7 @@ func handle(k *KeyChain) error {
 	}
 	if *flagRm {
 		// remove key
+		delete(k.Keys, name)
 	}
 
 	return nil

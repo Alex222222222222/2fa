@@ -63,11 +63,11 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"crypto/hmac"
 	"crypto/sha1"
 	"encoding/base32"
 	"encoding/binary"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -75,14 +75,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 	"unicode"
-
-	"github.com/atotto/clipboard"
 )
 
+// usage message
 const usageMessage = `
 usage: 2fa <command> [options] keyname
 	-help : print this help message and exit
@@ -92,7 +90,33 @@ usage: 2fa <command> [options] keyname
 		-hotp : add hotp 2fa
 	-list : print all keys
 	-clip : copy the code to clipboard
+
+	-viewRecover: view recovery code for a key
 `
+
+type KeyType int
+
+const (
+	// TOTP is a time-based key.
+	TOTP KeyType = iota
+	// HOTP is a counter-based key.
+	HOTP
+)
+
+type KeyChain struct {
+	File string
+	Keys map[string]*Key
+}
+
+type Key struct {
+	Name        string
+	Raw         []byte   // raw key bytes
+	Key         []byte   // key from the user
+	Digits      int      // 6 or 7 or 8
+	RecoverCode []string // recover code given by the user
+	Counter     uint64   // counter for HTOP
+	KeyType     KeyType  // TOTP or HOTP
+}
 
 var (
 	flagAdd  = flag.Bool("add", false, "add a key")
@@ -101,12 +125,11 @@ var (
 	flag7    = flag.Bool("7", false, "generate 7-digit code")
 	flag8    = flag.Bool("8", false, "generate 8-digit code")
 	flagClip = flag.Bool("clip", false, "copy code to the clipboard")
-)
 
-func usage() {
-	fmt.Fprintf(os.Stderr, usageMessage)
-	os.Exit(2)
-}
+	flagViewRecoverCode = flag.Bool("viewRecover", false, "view recover code for a key")
+
+	flagSetSaveFile = flag.Bool("setSaveFile", false, "set save file location")
+)
 
 func main() {
 	log.SetPrefix("2fa: ")
@@ -114,222 +137,218 @@ func main() {
 	flag.Usage = usage
 	flag.Parse()
 
-	k := readKeychain(filepath.Join(os.Getenv("HOME"), ".local/share/2fa"))
+	// read key chain
+	k, err := readKeyChain(filepath.Join(os.Getenv("HOME"), ".local/share/2fa"))
+	if err != nil {
+		log.Fatal(err)
+	}
 
+	if err := handle(k); err != nil {
+		log.Fatal(err)
+	}
+
+	// save key chain
+	if err := k.saveKeyChainFile(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func handle(k *KeyChain) error {
 	if *flagList {
 		if flag.NArg() != 0 {
 			usage()
 		}
 		k.list()
-		return
+		return nil
 	}
 	if flag.NArg() == 0 && !*flagAdd {
 		if *flagClip {
 			usage()
 		}
-		k.showAll()
-		return
+		k.list()
+		return nil
 	}
 	if flag.NArg() != 1 {
 		usage()
 	}
 	name := flag.Arg(0)
-	if strings.IndexFunc(name, unicode.IsSpace) >= 0 {
-		log.Fatal("name must not contain spaces")
-	}
+	// trim name to avoid leading/trailing whitespace
+	name = strings.TrimSpace(name)
 	if *flagAdd {
 		if *flagClip {
 			usage()
 		}
-		k.add(name)
-		return
+		err := k.add(name)
+		if err != nil {
+			return err
+		}
+		return nil
 	}
-	k.show(name)
+
+	return nil
 }
 
-type Keychain struct {
-	file string
-	data []byte
-	keys map[string]Key
+func usage() {
+	fmt.Fprintf(os.Stderr, usageMessage)
+	os.Exit(2)
 }
 
-type Key struct {
-	raw    []byte
-	digits int
-	offset int // offset of counter
-}
-
-const counterLen = 20
-
-func readKeychain(file string) *Keychain {
-	c := &Keychain{
-		file: file,
-		keys: make(map[string]Key),
+// read key chain from file
+func readKeyChain(file string) (*KeyChain, error) {
+	c := &KeyChain{
+		File: file,
+		Keys: make(map[string]*Key),
 	}
+
 	data, err := ioutil.ReadFile(file)
+	if os.IsNotExist(err) {
+		// No key chain file yet. That's fine.
+		return c, nil
+	}
 	if err != nil {
-		if os.IsNotExist(err) {
-			return c
-		}
-		log.Fatal(err)
+		return nil, err
 	}
-	c.data = data
 
-	lines := bytes.SplitAfter(data, []byte("\n"))
-	offset := 0
-	for i, line := range lines {
-		lineno := i + 1
-		offset += len(line)
-		f := bytes.Split(bytes.TrimSuffix(line, []byte("\n")), []byte(" "))
-		if len(f) == 1 && len(f[0]) == 0 {
-			continue
-		}
-		if len(f) >= 3 && len(f[1]) == 1 && '6' <= f[1][0] && f[1][0] <= '8' {
-			var k Key
-			name := string(f[0])
-			k.digits = int(f[1][0] - '0')
-			raw, err := decodeKey(string(f[2]))
-			if err == nil {
-				k.raw = raw
-				if len(f) == 3 {
-					c.keys[name] = k
-					continue
-				}
-				if len(f) == 4 && len(f[3]) == counterLen {
-					_, err := strconv.ParseUint(string(f[3]), 10, 64)
-					if err == nil {
-						// Valid counter.
-						k.offset = offset - counterLen
-						if line[len(line)-1] == '\n' {
-							k.offset--
-						}
-						c.keys[name] = k
-						continue
-					}
-				}
-			}
-		}
-		log.Printf("%s:%d: malformed key", c.file, lineno)
+	// if the data is blank, return new blank key chain
+	if len(data) == 0 {
+		return c, nil
 	}
-	return c
+
+	// read the data using json
+	err = json.Unmarshal(data, &c)
+	if err != nil {
+		return nil, err
+	}
+
+	// if the file path stored in the key chain is different from the one we are using, read from the new file
+	if c.File != file {
+		return readKeyChain(c.File)
+	}
+
+	return c, nil
 }
 
-func (c *Keychain) list() {
+func (c *KeyChain) saveKeyChainFile() error {
+	data, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+
+	err = os.MkdirAll(filepath.Dir(c.File), 0700)
+	if err != nil {
+		return err
+	}
+
+	return ioutil.WriteFile(c.File, data, 0600)
+}
+
+// print name of all existing keys
+func (c *KeyChain) list() {
+	longest := 0
 	var names []string
-	for name := range c.keys {
+	for name := range c.Keys {
 		names = append(names, name)
+		if len(name) > longest {
+			longest = len(name)
+		}
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		fmt.Println(name)
+		fmt.Println(name + strings.Repeat(" ", longest-len(name)+2) + c.code(name)) // +2 for the tab
 	}
 }
 
-func noSpace(r rune) rune {
-	if unicode.IsSpace(r) {
-		return -1
+// add a key
+func (c *KeyChain) add(name string) error {
+	if _, ok := c.Keys[name]; ok {
+		return fmt.Errorf("key %q already exists", name)
 	}
-	return r
-}
 
-func (c *Keychain) add(name string) {
+	// check size
 	size := 6
 	if *flag7 {
 		size = 7
 		if *flag8 {
-			log.Fatalf("cannot use -7 and -8 together")
+			return fmt.Errorf("cannot specify both -7 and -8")
 		}
 	} else if *flag8 {
 		size = 8
 	}
 
-	fmt.Fprintf(os.Stderr, "2fa key for %s: ", name)
+	// ask for key
+	fmt.Fprintf(os.Stdout, "2fa key for %s: ", name)
 	text, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil {
 		log.Fatalf("error reading key: %v", err)
 	}
-	text = strings.Map(noSpace, text)
+	text = strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, text)
 	text += strings.Repeat("=", -len(text)&7) // pad to 8 bytes
-	if _, err := decodeKey(text); err != nil {
+
+	// test key valid
+	raw, err := decodeKey(text)
+	if err != nil {
 		log.Fatalf("invalid key: %v", err)
 	}
 
-	line := fmt.Sprintf("%s %d %s", name, size, text)
-	if *flagHotp {
-		line += " " + strings.Repeat("0", 20)
-	}
-	line += "\n"
-
-	f, err := os.OpenFile(c.file, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0600)
+	// ask for recovery code
+	fmt.Fprintf(os.Stdout, "recover code ( separated by space or , or ; or | ) for %s: ", name)
+	recoverCodeText, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil {
-		log.Fatalf("opening keychain: %v", err)
+		log.Fatalf("error reading key: %v", err)
 	}
-	f.Chmod(0600)
+	// match recover code by space or , or ; or |
+	recoverCode := strings.FieldsFunc(recoverCodeText, func(r rune) bool {
+		return r == ' ' || r == ',' || r == ';' || r == '|' || r == '\t'
+	})
+	// delete empty entry of recover code
+	for i := 0; i < len(recoverCode); i += 1 {
+		if recoverCode[i] == "" {
+			recoverCode = append(recoverCode[:i], recoverCode[i+1:]...)
+			i -= 1
+		}
+	}
 
-	if _, err := f.Write([]byte(line)); err != nil {
-		log.Fatalf("adding key: %v", err)
+	var key *Key = &Key{
+		Name:        name,
+		Raw:         raw,
+		Digits:      size,
+		KeyType:     TOTP,
+		Key:         []byte(text),
+		Counter:     0,
+		RecoverCode: recoverCode,
 	}
-	if err := f.Close(); err != nil {
-		log.Fatalf("adding key: %v", err)
+
+	if *flagHotp {
+		key.KeyType = HOTP
 	}
+
+	c.Keys[name] = key
+
+	return nil
 }
 
-func (c *Keychain) code(name string) string {
-	k, ok := c.keys[name]
+// return the real code for a key
+func (c *KeyChain) code(name string) string {
+	k, ok := c.Keys[name]
 	if !ok {
 		log.Fatalf("no such key %q", name)
 	}
 	var code int
-	if k.offset != 0 {
-		n, err := strconv.ParseUint(string(c.data[k.offset:k.offset+counterLen]), 10, 64)
-		if err != nil {
-			log.Fatalf("malformed key counter for %q (%q)", name, c.data[k.offset:k.offset+counterLen])
-		}
-		n++
-		code = hotp(k.raw, n, k.digits)
-		f, err := os.OpenFile(c.file, os.O_RDWR, 0600)
-		if err != nil {
-			log.Fatalf("opening keychain: %v", err)
-		}
-		if _, err := f.WriteAt([]byte(fmt.Sprintf("%0*d", counterLen, n)), int64(k.offset)); err != nil {
-			log.Fatalf("updating keychain: %v", err)
-		}
-		if err := f.Close(); err != nil {
-			log.Fatalf("updating keychain: %v", err)
-		}
-	} else {
-		// Time-based key.
-		code = totp(k.raw, time.Now(), k.digits)
-	}
-	return fmt.Sprintf("%0*d", k.digits, code)
-}
 
-func (c *Keychain) show(name string) {
-	code := c.code(name)
-	if *flagClip {
-		clipboard.WriteAll(code)
+	switch k.KeyType {
+	case TOTP:
+		code = totp(k.Raw, time.Now(), k.Digits)
+	case HOTP:
+		code = hotp(k.Raw, k.Counter, k.Digits)
+		k.Counter++
 	}
-	fmt.Printf("%s\n", code)
-}
 
-func (c *Keychain) showAll() {
-	var names []string
-	max := 0
-	for name, k := range c.keys {
-		names = append(names, name)
-		if max < k.digits {
-			max = k.digits
-		}
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		k := c.keys[name]
-		code := strings.Repeat("-", k.digits)
-		if k.offset == 0 {
-			code = c.code(name)
-		}
-		fmt.Printf("%-*s\t%s\n", max, code, name)
-	}
+	return fmt.Sprintf("%0*d", k.Digits, code)
 }
 
 func decodeKey(key string) ([]byte, error) {

@@ -68,6 +68,7 @@ import (
 	"encoding/base32"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -110,6 +111,20 @@ const (
 	HOTP
 )
 
+type RunMode int
+
+const (
+	// keychainVersion is the version of the keychain file format.
+	HelpMessage RunMode = iota
+	AddMessage
+	EditMessage
+	RemoveMessage
+	ListMessage
+	ClipMessage
+	ViewRecoveryMessage
+	SetSaveFile
+)
+
 type KeyChain struct {
 	File string
 	Keys map[string]*Key
@@ -126,6 +141,9 @@ type Key struct {
 }
 
 var (
+	flagHelp     = flag.Bool("h", false, "print help message and exit")
+	flagHelpLong = flag.Bool("help", false, "print help message and exit")
+
 	flagAdd  = flag.Bool("add", false, "add a key")
 	flagList = flag.Bool("list", false, "list keys")
 	flagHotp = flag.Bool("hotp", false, "add key as HOTP (counter-based) key")
@@ -152,7 +170,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	if err := handle(k); err != nil {
+	// parse command line
+	mode, name := parseCommandLine()
+
+	if err := handle(k, mode, name); err != nil {
 		log.Fatal(err)
 	}
 
@@ -162,61 +183,71 @@ func main() {
 	}
 }
 
-func handle(k *KeyChain) error {
-	if *flagList {
-		if flag.NArg() != 0 {
-			usage()
-		}
-		err := k.list()
-		return err
+func determineRunMode() RunMode {
+	if *flagHelp {
+		return HelpMessage
 	}
-	if flag.NArg() == 0 && !*flagAdd {
-		if *flagClip {
-			usage()
-		}
-		err := k.list()
-		return err
+	if *flagHelpLong {
+		return HelpMessage
 	}
-	if flag.NArg() != 1 {
-		usage()
-	}
-	name := flag.Arg(0)
-	// trim name to avoid leading/trailing whitespace
-	name = strings.TrimSpace(name)
 	if *flagAdd {
-		if *flagClip {
-			usage()
-		}
-		err := k.add(name)
-		if err != nil {
-			return err
-		}
-		return nil
+		return AddMessage
 	}
-	if *flagClip {
-		// copy code to clipboard
-		err := k.clip(name)
-		return err
+	if *flagList {
+		return ListMessage
 	}
 	if *flagEdit {
-		// edit key
-		err := k.edit(name)
-		return err
+		return EditMessage
 	}
 	if *flagRm {
-		// remove key
-		delete(k.Keys, name)
-		return nil
+		return RemoveMessage
+	}
+	if *flagClip {
+		return ClipMessage
 	}
 	if *flagViewRecoverCode {
-		// view recover code
-		err := k.viewRecover(name)
-		return err
+		return ViewRecoveryMessage
 	}
 	if *flagSetSaveFile {
-		// set save file location
-		err := k.setSaveFile(name)
-		return err
+		return SetSaveFile
+	}
+	return HelpMessage
+}
+
+func parseName() string {
+	if flag.NArg() == 0 {
+		return ""
+	}
+	return flag.Arg(0)
+}
+
+func parseCommandLine() (RunMode, string) {
+	mode := determineRunMode()
+	name := parseName()
+
+	return mode, name
+}
+
+func handle(k *KeyChain, runMode RunMode, name string) error {
+	switch runMode {
+	case HelpMessage:
+		usage()
+	case AddMessage:
+		return k.add(name)
+	case EditMessage:
+		return k.edit(name)
+	case RemoveMessage:
+		return k.remove(name)
+	case ListMessage:
+		return k.list()
+	case ClipMessage:
+		return k.clip(name)
+	case ViewRecoveryMessage:
+		return k.viewRecover(name)
+	case SetSaveFile:
+		return k.setSaveFile(name)
+	default:
+		return errors.New("invalid run mode")
 	}
 
 	return nil
@@ -324,6 +355,11 @@ func (c *KeyChain) list() error {
 
 // add a key
 func (c *KeyChain) add(name string) error {
+	// if name is empty
+	if name == "" {
+		return errors.New("name cannot be empty")
+	}
+
 	if _, ok := c.Keys[name]; ok {
 		return fmt.Errorf("key %q already exists", name)
 	}
@@ -397,6 +433,11 @@ func (c *KeyChain) add(name string) error {
 }
 
 func (c *KeyChain) edit(name string) error {
+	// if name is empty
+	if name == "" {
+		return errors.New("name cannot be empty")
+	}
+
 	// remove the given name from keys
 	existingKey, ok := c.Keys[name]
 	if !ok {
@@ -432,6 +473,11 @@ func (c *KeyChain) code(name string) (string, error) {
 }
 
 func (c *KeyChain) clip(name string) error {
+	// test if name is empty
+	if name == "" {
+		return errors.New("name cannot be empty")
+	}
+
 	// test if the name exist in the key chain
 	_, ok := c.Keys[name]
 	if !ok {
@@ -456,6 +502,11 @@ func (c *KeyChain) clip(name string) error {
 }
 
 func (c *KeyChain) viewRecover(name string) error {
+	// if name is empty
+	if name == "" {
+		return errors.New("name cannot be empty")
+	}
+
 	// test if the name exist in the key chain
 	k, ok := c.Keys[name]
 	if !ok {
@@ -468,7 +519,17 @@ func (c *KeyChain) viewRecover(name string) error {
 }
 
 func (c *KeyChain) setSaveFile(file string) error {
+	// if file is empty
+	if file == "" {
+		return errors.New("file cannot be empty")
+	}
+
 	c.File = file
+	return nil
+}
+
+func (c *KeyChain) remove(name string) error {
+	delete(c.Keys, name)
 	return nil
 }
 

@@ -215,6 +215,8 @@ func handle(k *KeyChain) error {
 	}
 	if *flagSetSaveFile {
 		// set save file location
+		err := k.setSaveFile(name)
+		return err
 	}
 
 	return nil
@@ -261,6 +263,30 @@ func readKeyChain(file string) (*KeyChain, error) {
 }
 
 func (c *KeyChain) saveKeyChainFile() error {
+	mainPath := filepath.Join(os.Getenv("HOME"), ".local/share/2fa")
+	// save the target file path in the to main path first, if the target file path is different from the main path
+	if c.File != mainPath {
+		blankKeyChain := &KeyChain{
+			File: c.File,
+			Keys: make(map[string]*Key),
+		}
+
+		data, err := json.Marshal(blankKeyChain)
+		if err != nil {
+			return err
+		}
+
+		err = os.MkdirAll(filepath.Dir(mainPath), 0700)
+		if err != nil {
+			return err
+		}
+
+		err = ioutil.WriteFile(mainPath, data, 0600)
+		if err != nil {
+			return err
+		}
+	}
+
 	data, err := json.Marshal(c)
 	if err != nil {
 		return err
@@ -438,6 +464,11 @@ func (c *KeyChain) viewRecover(name string) error {
 
 	// print the recover code
 	fmt.Println(name + strings.Repeat(" ", 2) + strings.Join(k.RecoverCode, "\n\t"))
+	return nil
+}
+
+func (c *KeyChain) setSaveFile(file string) error {
+	c.File = file
 	return nil
 }
 

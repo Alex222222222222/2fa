@@ -198,16 +198,23 @@ func handle(k *KeyChain) error {
 		err := k.clip(name)
 		return err
 	}
-	if *flagViewRecoverCode {
-		// view recover code
-	}
 	if *flagEdit {
 		// edit key
-		return k.edit(name)
+		err := k.edit(name)
+		return err
 	}
 	if *flagRm {
 		// remove key
 		delete(k.Keys, name)
+		return nil
+	}
+	if *flagViewRecoverCode {
+		// view recover code
+		err := k.viewRecover(name)
+		return err
+	}
+	if *flagSetSaveFile {
+		// set save file location
 	}
 
 	return nil
@@ -419,6 +426,18 @@ func (c *KeyChain) clip(name string) error {
 	// print the code
 	fmt.Println(name + strings.Repeat(" ", 2) + code)
 
+	return nil
+}
+
+func (c *KeyChain) viewRecover(name string) error {
+	// test if the name exist in the key chain
+	k, ok := c.Keys[name]
+	if !ok {
+		return fmt.Errorf("key %q does not exist", name)
+	}
+
+	// print the recover code
+	fmt.Println(name + strings.Repeat(" ", 2) + strings.Join(k.RecoverCode, "\n\t"))
 	return nil
 }
 
